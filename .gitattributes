@@ -1,0 +1,8 @@
+# 模块脚本必须 LF，否则在安卓上可能无法执行
+* text=auto eol=lf
+*.sh text eol=lf
+*.html text eol=lf
+*.prop text eol=lf
+update-binary text eol=lf
+updater-script text eol=lf
+*.zip binary
