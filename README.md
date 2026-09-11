@@ -74,7 +74,7 @@ su -c 'sh /data/adb/modules/brightness_boost/cli.sh status'
 ## 兼容性
 
 - 理论支持所有可读 `/sys/class/backlight/*/brightness` 的安卓设备
-- 主要在红米 Note 12 Turbo / POCO F5（marble，Android 16 / HyperOS，KernelSU）上开发验证
+- 主要在小米13U HyperOS4 a17上开发验证
 - 不同机型节点名与 max_brightness 不同，安装时会自动探测
 
 ## 免责声明
