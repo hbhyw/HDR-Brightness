@@ -1,6 +1,0 @@
-id=brightness_boost
-name=亮度上托 Brightness Boost
-version=v1.2.1
-versionCode=4
-author=汉堡
-description=三种模式：自动上托（拉满亮度条平滑爬升到目标值）、手动实时（WebUI 滑杆直写内核节点）、锁定（写住目标亮度，系统抢回立即回写，持续对抢时自动短暂冷却防闪）。安装时自动探测并锁定背光节点，存在 hbm_mode 节点时高亮度自动联动。息屏一律不动作。配置 /data/adb/brightness_boost.conf，管理器“操作”按钮可一键开关。

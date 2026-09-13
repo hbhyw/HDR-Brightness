@@ -7,6 +7,9 @@ Thumbs.db
 .vscode/
 *.iml
 
+# 本机存档：已废弃的 Magisk/KernelSU 亮度模块（见 README 第八节）
+.archive/
+
 # 本地运行时/临时产物
 *.log
 *.tmp

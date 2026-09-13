@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.hamburger.hdrwin">
+
+    <uses-sdk android:minSdkVersion="34" android:targetSdkVersion="36" />
+
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true">
+
+        <activity
+            android:name="com.hamburger.hdrwin.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- exported 是为了能用 adb 直接起服务（这机器上 MIUI 不让 shell 起 Activity） -->
+        <service
+            android:name="com.hamburger.hdrwin.HdrWindowService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="com.hamburger.hdrwin.START" />
+                <action android:name="com.hamburger.hdrwin.STOP" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a tiny transparent HDR-tagged image on screen so the panel runs in HDR brightness mode" />
+        </service>
+    </application>
+</manifest>
