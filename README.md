@@ -7,16 +7,19 @@
 
 实测机型：小米 13 Ultra（ishtar / 2304FPN6DC）· HyperOS `OS4.0.0.35.XPBCNXM` · Android 17 · 内核 `5.15.216-ChirunoNeko-A17-260911-Dev`
 
-| 下载 | 说明 |
-| --- | --- |
-| [`hdrwin/HDR-Brightness.apk`](hdrwin/HDR-Brightness.apk) | 16 787 字节，直接装。`minSdkVersion 34`（Android 14+） |
+| 版本 | 文件 | 说明 |
+| --- | --- | --- |
+| **v1.1.0** | [`hdrwin/HDR-Brightness.apk`](hdrwin/HDR-Brightness.apk) | 20 883 字节。加了**深色模式**（跟随系统 / 深色 / 浅色） |
+| v1.0.0 | [Release v1.0.0](https://github.com/hbhyw/HDR-Brightness/releases/tag/v1.0.0) | 16 787 字节。下面「实测数据」那些数字就是它跑出来的 |
 
 ```
-SHA-256  4B9E8E8FC6C15EE7A253ACE0184FA19B4CDBB21FBAFA71974F4F7D38DFA26BE5
-签名证书  CN=Android Debug, O=Android, C=US
+v1.1.0  SHA-256  2459B7BEA928882EED1E9B3A532F12EB395439A2027F57FA04777FF5F5B53DBA
+v1.0.0  SHA-256  4B9E8E8FC6C15EE7A253ACE0184FA19B4CDBB21FBAFA71974F4F7D38DFA26BE5
+签名证书  CN=Android Debug, O=Android, C=US（两个版本同一个签名，可以直接互相覆盖安装）
 ```
 
-这个 APK 就是下面「实测数据」里跑出那些数字的**同一个文件**，没有重新编译过。
+v1.1.0 只动了界面，**`HdrWindowService.java` 一行没改**，HDR 触发那套逻辑和 v1.0.0 完全一样。
+两个包名和签名都相同，装上就能覆盖，`minSdkVersion 34`（Android 14+）。
 
 ---
 
@@ -191,6 +194,25 @@ HDR 图层存在时，SurfaceFlinger 按这个属性的值决定要不要切到�
 3. **「2. 开启」** → 状态显示「已开启」，然后就可以把界面关掉了（服务会常驻一条低优先级通知）
 4. **「3. 关闭」** → 图层撤回，亮度交还系统
 
+### 深色模式（v1.1.0）
+
+界面下方有三个选项，默认**跟随系统**：
+
+| 选项 | 做法 |
+| --- | --- |
+| 跟随系统 | `@style/AppTheme`，`values/` 是浅色、`values-night/` 是深色，系统自己挑 |
+| 深色 | `@style/AppTheme.Dark` → `Theme.DeviceDefault.NoActionBar` |
+| 浅色 | `@style/AppTheme.Light` → `Theme.DeviceDefault.Light.NoActionBar` |
+
+实现上是 **换主题**（`setTheme()` + `recreate()`），不是一个个 View 去刷颜色 ——
+所以按钮、单选框、文字、窗口背景、状态栏图标会一起变，不用维护两套配色。
+选择存在 `SharedPreferences`（`hdrwin` / `theme`：0 跟随系统、1 深色、2 浅色）。
+
+顺手做了两件事：
+
+- 主题用的是 `NoActionBar` 变体。界面里本来就自己画了标题，系统那条标题栏是重复的。
+- 补上了 `WindowInsets` 让位。`targetSdk 35+` 系统强制全面屏，之前标题会顶到状态栏底下。
+
 也可以命令行：
 
 ```sh
@@ -256,14 +278,20 @@ hdrwin/
 ├── build.ps1                               手工构建脚本
 ├── debug.keystore                          签名用
 ├── app/
-│   ├── AndroidManifest.xml                 minSdk 34 / targetSdk 36
-│   ├── res/values/strings.xml
+│   ├── AndroidManifest.xml                 minSdk 34 / targetSdk 36 / theme=@style/AppTheme
+│   ├── res/values/strings.xml              应用名
+│   ├── res/values/styles.xml               浅色 AppTheme + 强制深色/浅色两份
+│   ├── res/values-night/styles.xml         深色 AppTheme（「跟随系统」用）
 │   └── src/com/hamburger/hdrwin/
-│       ├── MainActivity.java               授权 / 开启 / 关闭 三个按钮
+│       ├── MainActivity.java               授权 / 开启 / 关闭 + 深色模式选择
 │       └── HdrWindowService.java           核心：造图 → 解码 → 绑 buffer → 悬浮窗
 └── tools/
     └── UltraHdrGen.java                    独立的 UltraHDR JPEG 生成器
 ```
+
+构建是纯手写的，顺序有个坑：代码里引用了 `R.style.AppTheme*`，而 `R.java` 是 `aapt2 link`
+生成的，所以**必须先 link 再 javac**（`--java <dir>` 输出 R.java）。顺序是
+`aapt2 compile → aapt2 link(+R.java) → javac → d8 → 注入 classes.dex → zipalign → apksigner`。
 
 `HdrWindowService` 里保留了两条**兜底路径**（`HardwareRenderer` 和 `lockHardwareCanvas`），
 它们是调试早期试错留下的，实测都会丢 gain map、无法触发 HDR，只在绑定失败时兜一下底。
@@ -295,6 +323,22 @@ hdrwin/
 ```sh
 git checkout bb419e9 -- .
 ```
+
+---
+
+## 九、更新日志
+
+### v1.1.0
+
+- 界面加了**深色模式**：跟随系统 / 深色 / 浅色三选一，默认跟随系统
+- 主题换成 `NoActionBar` 变体（去掉了重复的系统标题栏）
+- 补上 `WindowInsets` 让位，修掉标题被状态栏压住的问题
+- `HdrWindowService.java` 未改动，HDR 触发逻辑与 v1.0.0 一致
+
+### v1.0.0
+
+- 首个版本：透明 UltraHDR 小窗触发 HDR 亮度通路，背光 2047 → 3839 / 4095
+- 仓库从 Magisk 模块改为纯 APK
 
 ---
 

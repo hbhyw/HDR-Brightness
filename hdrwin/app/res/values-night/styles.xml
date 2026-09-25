@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- 系统处于深色模式时，「跟随系统」用这一份 -->
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+
+</resources>

@@ -28,40 +28,46 @@ $res      = Join-Path $work 'app\res'
 $manifest = Join-Path $work 'app\AndroidManifest.xml'
 $out      = Join-Path $work 'build'
 $ks       = Join-Path $work 'debug.keystore'
-New-Item -ItemType Directory -Force -Path "$out\classes", "$out\dex" | Out-Null
+New-Item -ItemType Directory -Force -Path "$out\classes", "$out\dex", "$out\gen" | Out-Null
 
-Write-Host '[1/5] aapt2 compile resources'
+Write-Host '[1/6] aapt2 compile resources'
 & "$bt\aapt2.exe" compile --dir $res -o "$out\res.zip"
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile failed' }
 
-Write-Host '[2/5] javac'
+# link has to happen before javac now: the code references R.style.* for the themes,
+# and R.java is what link generates.
+Write-Host '[2/6] aapt2 link (also emits R.java)'
+& "$bt\aapt2.exe" link -o "$out\unsigned.apk" -I $plat --manifest $manifest `
+    --min-sdk-version 34 --target-sdk-version 36 `
+    --version-code 2 --version-name 1.1.0 `
+    --java "$out\gen" "$out\res.zip"
+if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
+
+Write-Host '[3/6] javac'
 $srcFiles = @(Get-ChildItem -Path (Join-Path $work 'app\src') -Recurse -Filter *.java |
     ForEach-Object { $_.FullName })
-Write-Host ("      sources={0}" -f $srcFiles.Count)
+$srcFiles += @(Get-ChildItem -Path "$out\gen" -Recurse -Filter *.java |
+    ForEach-Object { $_.FullName })
+Write-Host ("      sources={0} (app + generated R.java)" -f $srcFiles.Count)
 & $javac -encoding UTF-8 -source 11 -target 11 -nowarn -classpath $plat -d "$out\classes" @srcFiles
 if ($LASTEXITCODE -ne 0) { throw 'javac failed' }
 
-Write-Host '[3/5] d8 to dex'
+Write-Host '[4/6] d8 to dex'
 $classFiles = @(Get-ChildItem -Path "$out\classes" -Recurse -Filter *.class | ForEach-Object { $_.FullName })
 & "$bt\d8.bat" --release --min-api 34 --lib $plat --output "$out\dex" @classFiles
 if ($LASTEXITCODE -ne 0) { throw 'd8 failed' }
 
 if (-not (Test-Path $ks)) {
-    Write-Host '[4/5] create debug keystore'
+    Write-Host '[5/6] create debug keystore'
     & $keytool -genkeypair -keystore $ks -storepass android -keypass android `
         -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 `
         -dname 'CN=Android Debug,O=Android,C=US'
     if ($LASTEXITCODE -ne 0) { throw 'keytool failed' }
 } else {
-    Write-Host '[4/5] reuse debug keystore'
+    Write-Host '[5/6] reuse debug keystore'
 }
 
-Write-Host '[5/5] aapt2 link + inject classes.dex + sign'
-& "$bt\aapt2.exe" link -o "$out\unsigned.apk" -I $plat --manifest $manifest `
-    --min-sdk-version 34 --target-sdk-version 36 `
-    --version-code 1 --version-name 1.0.0 "$out\res.zip"
-if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
-
+Write-Host '[6/6] inject classes.dex + zipalign + sign'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 

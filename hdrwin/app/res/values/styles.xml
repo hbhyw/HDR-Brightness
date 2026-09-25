@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      跟随系统：白天用这一份，系统开了深色时由 values-night/styles.xml 换成深色那份。
+      用 NoActionBar —— 界面里已经自己画了标题，不需要系统再给一条标题栏。
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+    <!-- 手动强制。这两份只在 values/ 里定义，不随系统变，所以强制深色/浅色都稳 -->
+    <style name="AppTheme.Dark" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+    <style name="AppTheme.Light" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+
+</resources>
