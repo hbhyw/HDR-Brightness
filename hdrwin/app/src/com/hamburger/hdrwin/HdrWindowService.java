@@ -66,8 +66,32 @@ public class HdrWindowService extends Service {
     private volatile boolean mDrewOnce = false;
     private android.graphics.HardwareRenderer mRenderer;
 
+    private volatile boolean mOverlayAdded = false;
+
     public static boolean isRunning() {
         return sRunning;
+    }
+
+    /**
+     * 这台机器的 logcat 对第三方 App 是关的（root 读也一样是空的），所以自己往文件里写一份。
+     * 路径：/data/user/0/com.hamburger.hdrwin/files/hdrwin.log
+     */
+    private void dbg(String msg) {
+        Log.i(TAG, msg);
+        try {
+            File f = new File(getFilesDir(), "hdrwin.log");
+            if (f.length() > 64 * 1024) {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+            FileOutputStream fos = new FileOutputStream(f, true);
+            try {
+                fos.write((System.currentTimeMillis() + " " + msg + "\n").getBytes("UTF-8"));
+            } finally {
+                fos.close();
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
@@ -75,19 +99,36 @@ public class HdrWindowService extends Service {
         super.onCreate();
         sRunning = true;
         startForegroundNotif();
+        dbg("onCreate");
+        showOverlaySafely();
+    }
+
+    /**
+     * showOverlay 以前只在 onCreate 里调一次。如果服务第一次是在「还没给悬浮窗权限」的时候起来的，
+     * addView 会失败，之后用户补上权限再点「开启」也不会重试 —— 服务已经在跑，onCreate 不会再走，
+     * 于是永远没有那个 HDR 窗口。所以每次 START 都检查一遍。
+     */
+    private void showOverlaySafely() {
+        if (mOverlayAdded && mView != null) {
+            dbg("overlay already added, nothing to do");
+            return;
+        }
         try {
             showOverlay();
         } catch (Throwable t) {
-            Log.e(TAG, "showOverlay failed", t);
+            dbg("showOverlay FAILED: " + t);
         }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            dbg("stop requested");
             stopSelf();
             return START_NOT_STICKY;
         }
+        dbg("onStartCommand action=" + (intent == null ? "null" : intent.getAction()));
+        showOverlaySafely();
         return START_STICKY;
     }
 
@@ -111,25 +152,28 @@ public class HdrWindowService extends Service {
             mRenderer = null;
         }
         mView = null;
+        mOverlayAdded = false;
         if (mBitmap != null) {
             mBitmap.recycle();
             mBitmap = null;
         }
-        Log.i(TAG, "service destroyed");
+        dbg("service destroyed");
         super.onDestroy();
     }
 
     // ------------------------------------------------------------------ overlay
 
     private void showOverlay() throws Exception {
+        dbg("showOverlay: begin");
         mWm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         if (mWm == null) {
-            Log.e(TAG, "no WindowManager");
+            dbg("showOverlay: no WindowManager");
             return;
         }
 
         mBitmap = buildTransparentUltraHdr();
-        Log.i(TAG, "bitmap " + mBitmap.getWidth() + "x" + mBitmap.getHeight()
+        dbg("bitmap " + mBitmap.getWidth() + "x" + mBitmap.getHeight()
+                + " config=" + mBitmap.getConfig()
                 + " hasGainmap=" + mBitmap.hasGainmap());
 
         final int size = Math.max(8, Math.round(SIZE_DP
@@ -142,24 +186,27 @@ public class HdrWindowService extends Service {
         // 也是普通 App（Google 相册）能触发 HDR 亮度的原因。
         try {
             mView.setDesiredHdrHeadroom(HEADROOM);
-            Log.i(TAG, "setDesiredHdrHeadroom(" + HEADROOM + ") ok");
+            dbg("setDesiredHdrHeadroom(" + HEADROOM + ") ok");
         } catch (Throwable t) {
-            Log.w(TAG, "setDesiredHdrHeadroom failed: " + t);
+            dbg("setDesiredHdrHeadroom FAILED: " + t);
         }
 
         mView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
+                dbg("surfaceCreated " + holder.getSurfaceFrame());
                 bindHardwareBuffer((SurfaceView) mView);
             }
 
             @Override
             public void surfaceChanged(SurfaceHolder holder, int f, int w, int h) {
+                dbg("surfaceChanged " + w + "x" + h);
                 bindHardwareBuffer((SurfaceView) mView);
             }
 
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
+                dbg("surfaceDestroyed");
             }
         });
 
@@ -180,7 +227,8 @@ public class HdrWindowService extends Service {
         lp.setTitle("hdrwin");
 
         mWm.addView(mView, lp);
-        Log.i(TAG, "overlay added " + size + "x" + size);
+        mOverlayAdded = true;
+        dbg("overlay added " + size + "x" + size);
 
         // 周期性重画，避免 buffer 被回收后图层失去 HDR 标记
         mHandler.postDelayed(new Runnable() {
@@ -255,26 +303,29 @@ public class HdrWindowService extends Service {
             // 1) 解码出带 gain map 的位图，取 HardwareBuffer
             Bitmap src = ImageDecoder.decodeBitmap(
                     ImageDecoder.createSource(new java.io.File(getCacheDir(), IMG_PATH_NAME)));
-            Log.i(TAG, "decoded " + src.getWidth() + "x" + src.getHeight()
+            dbg("decoded " + src.getWidth() + "x" + src.getHeight()
                     + " config=" + src.getConfig() + " hasGainmap=" + src.hasGainmap());
             Bitmap hw = src.getConfig() == Bitmap.Config.HARDWARE
                     ? src : src.copy(Bitmap.Config.HARDWARE, false);
+            dbg("hw copy config=" + (hw == null ? "null" : hw.getConfig())
+                    + " hasGainmap=" + (hw != null && hw.hasGainmap()));
             android.hardware.HardwareBuffer buf = hw == null ? null : hw.getHardwareBuffer();
             if (buf == null) {
-                Log.w(TAG, "no HardwareBuffer");
+                dbg("no HardwareBuffer");
                 return;
             }
-            Log.i(TAG, "hardware buffer " + buf.getWidth() + "x" + buf.getHeight()
-                    + " fmt=" + buf.getFormat());
+            dbg("hardware buffer " + buf.getWidth() + "x" + buf.getHeight()
+                    + " fmt=" + buf.getFormat() + " usage=0x"
+                    + Long.toHexString(buf.getUsage()));
 
             // 2) 拿 SurfaceView 的 SurfaceControl —— getSurfaceControl() 是公开 API，
             //    比反射 mBlastSurfaceControl 可靠（实测反射那条路字段是 null）。
             android.view.SurfaceControl sc = v.getSurfaceControl();
             if (sc == null || !sc.isValid()) {
-                Log.w(TAG, "surfaceControl null/invalid");
+                dbg("surfaceControl null/invalid");
                 return;
             }
-            Log.i(TAG, "surfaceControl ok");
+            dbg("surfaceControl ok");
 
             // 2b) 试着强制这一层走 HDR（Surface.setForceHdrEnabled 是隐藏 API）
             try {
@@ -285,19 +336,23 @@ public class HdrWindowService extends Service {
                     } catch (NoSuchFieldException ignored) {
                     }
                 }
-                if (sf != null) {
+                if (sf == null) {
+                    dbg("setForceHdrEnabled: field mSurface NOT FOUND on SurfaceView");
+                } else {
                     sf.setAccessible(true);
                     Object surfaceObj = sf.get(v);
-                    if (surfaceObj != null) {
+                    if (surfaceObj == null) {
+                        dbg("setForceHdrEnabled: SurfaceView.mSurface is null");
+                    } else {
                         java.lang.reflect.Method fhe = android.view.Surface.class
                                 .getDeclaredMethod("setForceHdrEnabled", boolean.class);
                         fhe.setAccessible(true);
                         fhe.invoke(surfaceObj, Boolean.TRUE);
-                        Log.i(TAG, "Surface.setForceHdrEnabled(true) ok");
+                        dbg("Surface.setForceHdrEnabled(true) ok");
                     }
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "setForceHdrEnabled failed: " + t);
+                dbg("setForceHdrEnabled FAILED: " + t);
             }
 
             // 3) Transaction.setBuffer + setExtendedRangeBrightness
@@ -307,9 +362,9 @@ public class HdrWindowService extends Service {
             tx.setExtendedRangeBrightness(sc, HEADROOM, HEADROOM);
             tx.apply();
             mDrewOnce = true;
-            Log.i(TAG, "bound HardwareBuffer to SurfaceControl + extendedRange " + HEADROOM);
+            dbg("bound HardwareBuffer to SurfaceControl + extendedRange " + HEADROOM);
         } catch (Throwable t) {
-            Log.e(TAG, "bindHardwareBuffer failed: " + t, t);
+            dbg("bindHardwareBuffer FAILED: " + t);
         }
     }
 
@@ -341,12 +396,12 @@ public class HdrWindowService extends Service {
             }
             if (!mDrewOnce) {
                 mDrewOnce = true;
-                Log.i(TAG, "drew via " + (hw ? "hardware" : "software") + " canvas"
+                dbg("drew via " + (hw ? "hardware" : "software") + " canvas"
                         + " size=" + c.getWidth() + "x" + c.getHeight()
                         + " gainmap=" + (mBitmap != null && mBitmap.hasGainmap()));
             }
         } catch (Throwable t) {
-            Log.w(TAG, "draw failed: " + t);
+            dbg("draw FAILED: " + t);
         } finally {
             if (c != null) {
                 try {
@@ -402,9 +457,9 @@ public class HdrWindowService extends Service {
             } finally {
                 fos.close();
             }
-            Log.i(TAG, "wrote " + f + " " + f.length() + " bytes");
+            dbg("wrote " + f + " " + f.length() + " bytes hash=" + f.length());
         } catch (Throwable t) {
-            Log.w(TAG, "dump jpg failed: " + t);
+            dbg("dump jpg FAILED: " + t);
         }
         return base;
     }

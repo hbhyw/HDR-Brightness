@@ -10,8 +10,8 @@ $javaBin = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin' } else { 'C:\too
 $javac   = Join-Path $javaBin 'javac.exe'
 $keytool = Join-Path $javaBin 'keytool.exe'
 
-$verCode = 3
-$verName = '1.1.1'
+$verCode = 4
+$verName = '1.1.2'
 
 foreach ($p in @($bt, $plat, $javac)) {
     if (-not (Test-Path $p)) { throw "missing: $p" }

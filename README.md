@@ -9,12 +9,13 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| **v1.1.1** | [`hdrwin/HDR-Brightness.apk`](hdrwin/HDR-Brightness.apk) | 20 883 字节。**装这个。** 深色模式 + 修好安装失败 |
+| **v1.1.2** | [`hdrwin/HDR-Brightness.apk`](hdrwin/HDR-Brightness.apk) | 20 883 字节。**装这个。** 深色模式 + 修好安装失败 + 修好「给了权限也开不起来」 |
+| v1.1.1 | [Release v1.1.1](https://github.com/hbhyw/HDR-Brightness/releases/tag/v1.1.1) | 能装，但没有下面第 2 条修复 |
 | v1.1.0 | [Release v1.1.0](https://github.com/hbhyw/HDR-Brightness/releases/tag/v1.1.0) | ❌ 装不上（-124），别用 |
 | v1.0.0 | [Release v1.0.0](https://github.com/hbhyw/HDR-Brightness/releases/tag/v1.0.0) | ❌ 同一个打包缺陷，也别用 |
 
 ```
-v1.1.1  SHA-256  89AB6B10E31FE88D125D8C5EED27CB802DF42CF89C58E044EC417D6588667EE5
+v1.1.2  SHA-256  BE40D00878590B04E2B52AE9D4A83D08D3A3C5E3F94BC1C16943903CB415B8C4
 签名证书  CN=Android Debug, O=Android, C=US
 ```
 
@@ -23,9 +24,9 @@ v1.1.1  SHA-256  89AB6B10E31FE88D125D8C5EED27CB802DF42CF89C58E044EC417D6588667EE
 > stored uncompressed and aligned on a 4-byte boundary`）。
 > 原因和修法见[第六节](#六自己编译)。那两个 Release 留着当记录，别装。
 
-v1.1.0 起只动了界面，**`HdrWindowService.java` 一行没改**，HDR 触发那套逻辑没变过。
-下面「实测数据」那张表是用同一份源码在本地构建、装上真机跑出来的；仓库里那两份 Release
-是后来重新构建的产物，才带上了上面这个打包缺陷。`minSdkVersion 34`（Android 14+）。
+**`HdrWindowService.java` 的 HDR 触发逻辑从 v1.0.0 起就没改过**，v1.1.x 改的都是界面和打包。
+下面「实测数据」那张表是用同一份源码在本地构建、装上真机跑出来的；仓库里 v1.0.0 / v1.1.0
+那两份 Release 是后来重新构建的产物，才带上了上面这个打包缺陷。`minSdkVersion 34`（Android 14+）。
 
 ---
 
@@ -228,13 +229,34 @@ adb shell am start-service -n com.hamburger.hdrwin/.HdrWindowService \
     -a com.hamburger.hdrwin.STOP
 ```
 
+### 顺序很重要：先给权限，再点开启
+
+悬浮窗权限没给的时候，`WindowManager.addView()` 会直接抛异常。以前加窗口只在 `onCreate()`
+里做一次，所以「**服务已经在跑（只是没有窗口）→ 用户补上权限 → 再点开启**」这条路上，
+服务不会重建、`onCreate()` 不会再走，窗口就永远补不出来了。
+
+v1.1.2 起每次 `START` 都会检查一遍窗口在不在，不在就补建。所以现在两种顺序都行。
+
 ### 怎么确认它真的生效了
 
 ```sh
-adb shell dumpsys SurfaceFlinger | grep -i hdr        # 期望 numHdrLayers(1), size(8x8)
-adb shell dumpsys display | grep -E 'mIsHdrLayerPresent|mHbmMode|hdrSdrRatio'
-adb shell cat /sys/class/backlight/panel0-backlight/brightness   # 期望 3839 或 4095
+adb shell dumpsys display | grep -E 'mIsHdrLayerPresent|mHbmMode=|hdrSdrRatio'
+#   开：mIsHdrLayerPresent=true   mHbmMode=hdr(0.xx)
+#   关：mIsHdrLayerPresent=false  mHbmMode=off
+adb shell dumpsys SurfaceFlinger | grep -i hdrwin     # 期望看到 geomBufferSize=[0 0 8 8]
+adb shell cat /sys/class/backlight/panel0-backlight/brightness
 ```
+
+状态变化不是瞬时的，改完等两三秒再读。
+
+**这台机器的 logcat 对第三方 App 是关的（root 读也一样空）**，所以 App 自己往文件里写了一份：
+
+```sh
+adb shell su -c 'cat /data/user/0/com.hamburger.hdrwin/files/hdrwin.log'
+```
+
+每次开关窗口都会记一行，`showOverlay FAILED` / `bindHardwareBuffer FAILED` /
+`setForceHdrEnabled FAILED` 之类一眼就能看到卡在哪。文件上限 64 KB，满了自动重来。
 
 ---
 
@@ -365,6 +387,17 @@ git checkout bb419e9 -- .
 
 ## 九、更新日志
 
+### v1.1.2
+
+- **修掉「给了权限也开不起来」**：加窗口以前只在 `onCreate()` 里做一次，
+  服务已经在跑时再点「开启」不会重建服务，窗口就永远补不出来。现在每次 `START` 都补检
+- **加了自带日志文件**：这台机器 ROM 把第三方 App 的 logcat 关了（root 读也是空的），
+  调试只能靠文件 —— `/data/user/0/com.hamburger.hdrwin/files/hdrwin.log`，上限 64 KB
+- 真机实测（小米 13 Ultra / HyperOS OS4 / Android 17，v1.1.2）：
+  开 → `mIsHdrLayerPresent=true`、`mHbmMode=hdr(0.52)`、背光 2132、色域仍是 `SRGB (7)`；
+  关 → `false` / `off`；再开 → `true`。5 次 × 3 秒采样稳定
+- 顺手核对：同一界面 HDR 开和关时截图，背景像素都是 `R=254 G=233 B=230` —— **HDR 不偏色**
+
 ### v1.1.1
 
 - **修掉安装失败**：`resources.arsc` 被压成了 DEFLATE，装上报 `-124`。
@@ -378,13 +411,13 @@ git checkout bb419e9 -- .
 - 主题换成 `NoActionBar` 变体（去掉了重复的系统标题栏）
 - 补上 `WindowInsets` 让位，修掉标题被状态栏压住的问题
 - `HdrWindowService.java` 未改动，HDR 触发逻辑与 v1.0.0 一致
-- ⚠️ 这个版本的包**装不上**（-124），请用 v1.1.1
+- ⚠️ 这个版本的包**装不上**（-124），请用 v1.1.2
 
 ### v1.0.0
 
 - 首个版本：透明 UltraHDR 小窗触发 HDR 亮度通路，背光 2047 → 3839 / 4095
 - 仓库从 Magisk 模块改为纯 APK
-- ⚠️ 这个版本的包**装不上**（同一个 -124 缺陷），请用 v1.1.1
+- ⚠️ 这个版本的包**装不上**（同一个 -124 缺陷），请用 v1.1.2
 
 ---
 
