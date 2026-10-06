@@ -10,6 +10,9 @@ $javaBin = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin' } else { 'C:\too
 $javac   = Join-Path $javaBin 'javac.exe'
 $keytool = Join-Path $javaBin 'keytool.exe'
 
+$verCode = 3
+$verName = '1.1.1'
+
 foreach ($p in @($bt, $plat, $javac)) {
     if (-not (Test-Path $p)) { throw "missing: $p" }
 }
@@ -34,12 +37,12 @@ Write-Host '[1/6] aapt2 compile resources'
 & "$bt\aapt2.exe" compile --dir $res -o "$out\res.zip"
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile failed' }
 
-# link has to happen before javac now: the code references R.style.* for the themes,
+# link has to happen before javac: the code references R.style.* for the themes,
 # and R.java is what link generates.
 Write-Host '[2/6] aapt2 link (also emits R.java)'
-& "$bt\aapt2.exe" link -o "$out\unsigned.apk" -I $plat --manifest $manifest `
+& "$bt\aapt2.exe" link -o "$out\linked.apk" -I $plat --manifest $manifest `
     --min-sdk-version 34 --target-sdk-version 36 `
-    --version-code 2 --version-name 1.1.0 `
+    --version-code $verCode --version-name $verName `
     --java "$out\gen" "$out\res.zip"
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
 
@@ -71,28 +74,25 @@ Write-Host '[6/6] inject classes.dex + zipalign + sign'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-function Repair-ZipEntryNames {
-    param([string]$Path)
-    $tmp = "$Path.fixed"
-    $src = [System.IO.Compression.ZipFile]::Open($Path, [System.IO.Compression.ZipArchiveMode]::Read)
-    $dst = [System.IO.Compression.ZipFile]::Open($tmp, [System.IO.Compression.ZipArchiveMode]::Create)
-    try {
-        foreach ($e in $src.Entries) {
-            $name = $e.FullName -replace '\\', '/'
-            $ne = $dst.CreateEntry($name, [System.IO.Compression.CompressionLevel]::Optimal)
-            $es = $e.Open(); $ns = $ne.Open()
-            try { $es.CopyTo($ns) } finally { $ns.Dispose(); $es.Dispose() }
-        }
-    } finally { $src.Dispose(); $dst.Dispose() }
-    Move-Item -Force $tmp $Path
-}
-Repair-ZipEntryNames -Path "$out\unsigned.apk"
-
-$zip = [System.IO.Compression.ZipFile]::Open("$out\unsigned.apk",
-    [System.IO.Compression.ZipArchiveMode]::Update)
+# Take aapt2's APK and only ADD classes.dex -- leave every existing entry byte-for-byte
+# alone.
+#
+# DO NOT "normalise" the zip by copying every entry through CreateEntry().  aapt2 stores
+# resources.arsc uncompressed and 4-byte aligned on purpose, and a deflated resources.arsc
+# is rejected at install time on targetSdk >= 30 with
+# INSTALL_PARSE_FAILED_RESOURCES_ARSC_COMPRESSED (-124):
+#   "Targeting R+ (version 30 and above) requires the resources.arsc of installed APKs
+#    to be stored uncompressed and aligned on a 4-byte boundary"
+# Worse, asking .NET for NoCompression does not help: under Windows PowerShell's
+# .NET Framework, CreateEntry(name, CompressionLevel.NoCompression) still emits DEFLATE.
+# ZipArchiveMode.Update does the right thing -- entries it never opens are copied
+# verbatim, method and all.
+$packed = "$out\packed.apk"
+Copy-Item -Force "$out\linked.apk" $packed
+$zip = [System.IO.Compression.ZipFile]::Open($packed, [System.IO.Compression.ZipArchiveMode]::Update)
 try {
     $i = 0
-    foreach ($dex in (Get-ChildItem -Path "$out\dex" -Filter *.dex)) {
+    foreach ($dex in (Get-ChildItem -Path "$out\dex" -Filter *.dex | Sort-Object Name)) {
         $entryName = if ($i -eq 0) { 'classes.dex' } else { "classes$($i + 1).dex" }
         $existing = $zip.GetEntry($entryName)
         if ($existing) { $existing.Delete() }
@@ -103,7 +103,7 @@ try {
     }
 } finally { $zip.Dispose() }
 
-& "$bt\zipalign.exe" -f -p 4 "$out\unsigned.apk" "$out\aligned.apk"
+& "$bt\zipalign.exe" -f -p 4 $packed "$out\aligned.apk"
 if ($LASTEXITCODE -ne 0) { throw 'zipalign failed' }
 $apk = Join-Path $work 'HDR-Brightness.apk'
 & "$bt\apksigner.bat" sign --ks $ks --ks-pass pass:android --key-pass pass:android `
@@ -114,6 +114,48 @@ $finalApk = Join-Path $root 'HDR-Brightness.apk'
 Copy-Item -Force $apk $finalApk
 Copy-Item -Force $ks (Join-Path $root 'debug.keystore')
 
+# ------------------------------------------------------------------ sanity check
+# Read the zip back the same way PackageManagerService does, and refuse to ship a
+# broken APK.  This is exactly the check that produced -124 in the first place.
+function Assert-ArscInstallable {
+    param([string]$Path)
+    $b = [System.IO.File]::ReadAllBytes($Path)
+    $eocd = -1
+    for ($i = $b.Length - 22; $i -ge 0 -and $i -ge $b.Length - 22 - 65535; $i--) {
+        if ($b[$i] -eq 0x50 -and $b[$i + 1] -eq 0x4B -and
+            $b[$i + 2] -eq 0x05 -and $b[$i + 3] -eq 0x06) { $eocd = $i; break }
+    }
+    if ($eocd -lt 0) { throw 'not a zip file' }
+    $total = [BitConverter]::ToUInt16($b, $eocd + 10)
+    $p = [int][BitConverter]::ToUInt32($b, $eocd + 16)
+    for ($n = 0; $n -lt $total; $n++) {
+        $method  = [BitConverter]::ToUInt16($b, $p + 10)
+        $nameLen = [BitConverter]::ToUInt16($b, $p + 28)
+        $extra   = [BitConverter]::ToUInt16($b, $p + 30)
+        $cmt     = [BitConverter]::ToUInt16($b, $p + 32)
+        $lho     = [int][BitConverter]::ToUInt32($b, $p + 42)
+        $name    = [System.Text.Encoding]::UTF8.GetString($b, $p + 46, $nameLen)
+        if ($name -eq 'resources.arsc') {
+            $off = $lho + 30 +
+                   [BitConverter]::ToUInt16($b, $lho + 26) +
+                   [BitConverter]::ToUInt16($b, $lho + 28)
+            if ($method -ne 0) {
+                throw "resources.arsc is compressed (method=$method) -> install fails with -124"
+            }
+            if (($off % 4) -ne 0) {
+                throw "resources.arsc not 4-byte aligned (data offset $off) -> install fails with -124"
+            }
+            Write-Host ("      resources.arsc: STORED, data offset {0} (4-byte aligned)" -f $off)
+            return
+        }
+        $p += 46 + $nameLen + $extra + $cmt
+    }
+    throw 'resources.arsc not found in the APK'
+}
+Write-Host 'checking resources.arsc is installable...'
+Assert-ArscInstallable -Path $finalApk
+
+& "$bt\zipalign.exe" -c -v 4 $finalApk 2>&1 | Select-Object -Last 1
 & "$bt\apksigner.bat" verify --print-certs $finalApk | Select-Object -First 3
 Write-Host ''
 Write-Host ("built: {0} ({1} bytes)" -f $finalApk, (Get-Item $finalApk).Length)

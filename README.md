@@ -9,17 +9,23 @@
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
-| **v1.1.0** | [`hdrwin/HDR-Brightness.apk`](hdrwin/HDR-Brightness.apk) | 20 883 字节。加了**深色模式**（跟随系统 / 深色 / 浅色） |
-| v1.0.0 | [Release v1.0.0](https://github.com/hbhyw/HDR-Brightness/releases/tag/v1.0.0) | 16 787 字节。下面「实测数据」那些数字就是它跑出来的 |
+| **v1.1.1** | [`hdrwin/HDR-Brightness.apk`](hdrwin/HDR-Brightness.apk) | 20 883 字节。**装这个。** 深色模式 + 修好安装失败 |
+| v1.1.0 | [Release v1.1.0](https://github.com/hbhyw/HDR-Brightness/releases/tag/v1.1.0) | ❌ 装不上（-124），别用 |
+| v1.0.0 | [Release v1.0.0](https://github.com/hbhyw/HDR-Brightness/releases/tag/v1.0.0) | ❌ 同一个打包缺陷，也别用 |
 
 ```
-v1.1.0  SHA-256  2459B7BEA928882EED1E9B3A532F12EB395439A2027F57FA04777FF5F5B53DBA
-v1.0.0  SHA-256  4B9E8E8FC6C15EE7A253ACE0184FA19B4CDBB21FBAFA71974F4F7D38DFA26BE5
-签名证书  CN=Android Debug, O=Android, C=US（两个版本同一个签名，可以直接互相覆盖安装）
+v1.1.1  SHA-256  89AB6B10E31FE88D125D8C5EED27CB802DF42CF89C58E044EC417D6588667EE5
+签名证书  CN=Android Debug, O=Android, C=US
 ```
 
-v1.1.0 只动了界面，**`HdrWindowService.java` 一行没改**，HDR 触发那套逻辑和 v1.0.0 完全一样。
-两个包名和签名都相同，装上就能覆盖，`minSdkVersion 34`（Android 14+）。
+> **v1.0.0 / v1.1.0 的包把 `resources.arsc` 压成了 DEFLATE，装上会报 -124**
+> （`Targeting R+ (version 30 and above) requires the resources.arsc of installed APKs to be
+> stored uncompressed and aligned on a 4-byte boundary`）。
+> 原因和修法见[第六节](#六自己编译)。那两个 Release 留着当记录，别装。
+
+v1.1.0 起只动了界面，**`HdrWindowService.java` 一行没改**，HDR 触发那套逻辑没变过。
+下面「实测数据」那张表是用同一份源码在本地构建、装上真机跑出来的；仓库里那两份 Release
+是后来重新构建的产物，才带上了上面这个打包缺陷。`minSdkVersion 34`（Android 14+）。
 
 ---
 
@@ -293,6 +299,37 @@ hdrwin/
 生成的，所以**必须先 link 再 javac**（`--java <dir>` 输出 R.java）。顺序是
 `aapt2 compile → aapt2 link(+R.java) → javac → d8 → 注入 classes.dex → zipalign → apksigner`。
 
+### 最大的坑：别碰 `resources.arsc` 的压缩方式
+
+`targetSdk >= 30` 之后，**PackageManagerService 拒绝安装 `resources.arsc` 被压缩过的 APK**，
+报 `INSTALL_PARSE_FAILED_RESOURCES_ARSC_COMPRESSED`（`-124`）：
+
+```
+Targeting R+ (version 30 and above) requires the resources.arsc of installed APKs
+to be stored uncompressed and aligned on a 4-byte boundary
+```
+
+`aapt2 link` 出来的包本来是对的 —— `resources.arsc` 是 **STORE**、数据偏移 4 字节对齐。
+**是后处理把它搞坏的**。实测（`aapt2 link` 原始输出 → 各种后处理之后）：
+
+| 步骤 | `resources.arsc` | 结果 |
+| --- | --- | --- |
+| `aapt2 link` 原始输出 | STORE, offset 1280 | ✅ |
+| 把所有条目用 `CreateEntry(name, Optimal)` 重写一遍 | DEFLATE | ❌ -124 |
+| 同上，但 `resources.arsc` 要 `NoCompression` | **还是 DEFLATE** | ❌ -124 |
+| `ZipArchiveMode.Update` 只加 `classes.dex` | STORE, offset 1284 | ✅ |
+
+两个反直觉的点：
+
+1. **Windows PowerShell 的 .NET Framework 里，`CreateEntry(name, CompressionLevel.NoCompression)`
+   依然会输出 DEFLATE** —— 这个枚举值它不认。所以「重新打包时手动指定不压缩」这条路走不通。
+2. **`zipalign` 救不了压缩过的条目** —— 它只调整未压缩条目的偏移，压缩条目它管不着，
+   而且照样打印 `Verification successful`。所以 `zipalign` 通过 ≠ 装得上。
+
+结论：**只往 aapt2 的输出里 `Update` 式地加 `classes.dex`，别重建整个 zip**。
+`build.ps1` 最后有一道 `Assert-ArscInstallable`：自己按 zip 中央目录把 `resources.arsc`
+的压缩方式和数据偏移读出来，不对就直接让构建失败 —— 这个错误只在安装时才会暴露，值得提前拦。
+
 `HdrWindowService` 里保留了两条**兜底路径**（`HardwareRenderer` 和 `lockHardwareCanvas`），
 它们是调试早期试错留下的，实测都会丢 gain map、无法触发 HDR，只在绑定失败时兜一下底。
 
@@ -328,17 +365,26 @@ git checkout bb419e9 -- .
 
 ## 九、更新日志
 
+### v1.1.1
+
+- **修掉安装失败**：`resources.arsc` 被压成了 DEFLATE，装上报 `-124`。
+  构建脚本里那一趟「把所有条目重写一遍」的后处理是罪魁祸首，已删掉
+- `build.ps1` 加了 `Assert-ArscInstallable`，以后构建出来就先自检，不合格不让出货
+- 代码和资源都没动（`classes.dex`、`resources.arsc` 与 v1.1.0 逐字节相同），只改了打包方式和版本号
+
 ### v1.1.0
 
 - 界面加了**深色模式**：跟随系统 / 深色 / 浅色三选一，默认跟随系统
 - 主题换成 `NoActionBar` 变体（去掉了重复的系统标题栏）
 - 补上 `WindowInsets` 让位，修掉标题被状态栏压住的问题
 - `HdrWindowService.java` 未改动，HDR 触发逻辑与 v1.0.0 一致
+- ⚠️ 这个版本的包**装不上**（-124），请用 v1.1.1
 
 ### v1.0.0
 
 - 首个版本：透明 UltraHDR 小窗触发 HDR 亮度通路，背光 2047 → 3839 / 4095
 - 仓库从 Magisk 模块改为纯 APK
+- ⚠️ 这个版本的包**装不上**（同一个 -124 缺陷），请用 v1.1.1
 
 ---
 
